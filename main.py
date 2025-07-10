@@ -564,6 +564,14 @@ class BalancingApp:
                 phis[p].append(res[p][1])
         ms_avg = [np.mean(m) for m in ms]
         phis_avg = [mean_angle_deg(phi) for phi in phis]
+        
+        # Применяем ограничения схемы к усреднённым результатам
+        if scheme == "Симметричная" and len(ms_avg) >= 2:
+            ms_avg[1] = ms_avg[0]  # масса2 = масса1
+            phis_avg[1] = phis_avg[0]  # фаза2 = фаза1
+        elif scheme == "Кососимметричная" and len(ms_avg) >= 2:
+            ms_avg[1] = ms_avg[0]  # масса2 = масса1
+            phis_avg[1] = (phis_avg[0] + 180) % 360  # фаза2 = (фаза1 + 180) % 360
         dkv_frame = tk.LabelFrame(self.result_frame, text=f"Классический расчёт ({scheme})", padx=10, pady=10)
         dkv_frame.pack(fill='x', pady=5, side='top', anchor='n')
         tk.Label(dkv_frame, text="Режим", font=('Arial',10,'bold'), width=12).grid(row=0,column=0)
