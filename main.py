@@ -158,17 +158,17 @@ def find_optimal_gruz(pusk0, sensitivities, max_mass=3.0, coarse_mass_step=0.1, 
                         sum_sq /= valid_modes
                     if sum_sq < min_sum and sum_sq < 1e6:
                         min_sum = sum_sq
-                        coarse_best = (mass1, phase1, mass2, phase2)
+                        coarse_best = (float(mass1), float(phase1), float(mass2), float(phase2))
 
     # Тонкий поиск вокруг лучшей точки
     if coarse_best:
         mass1, phase1, mass2, phase2 = coarse_best
         mass_range = np.arange(max(0, mass1 - coarse_mass_step), min(max_mass, mass1 + coarse_mass_step) + fine_mass_step, fine_mass_step)
-        phase_range = range(max(0, phase1 - coarse_phase_step), min(360, phase1 + coarse_phase_step) + fine_phase_step, fine_phase_step)
+        phase_range = range(max(0, int(phase1 - coarse_phase_step)), min(360, int(phase1 + coarse_phase_step) + fine_phase_step), fine_phase_step)
         for m1 in mass_range:
             for p1 in phase_range:
                 for m2 in np.arange(max(0, mass2 - coarse_mass_step), min(max_mass, mass2 + coarse_mass_step) + fine_mass_step, fine_mass_step):
-                    for p2 in range(max(0, phase2 - coarse_phase_step), min(360, phase2 + coarse_phase_step) + fine_phase_step, fine_phase_step):
+                    for p2 in range(max(0, int(phase2 - coarse_phase_step)), min(360, int(phase2 + coarse_phase_step) + fine_phase_step), fine_phase_step):
                         sum_sq = 0
                         valid_modes = 0
                         for i in range(n_speeds):
@@ -196,7 +196,7 @@ def find_optimal_gruz(pusk0, sensitivities, max_mass=3.0, coarse_mass_step=0.1, 
                             sum_sq /= valid_modes
                         if sum_sq < min_sum and sum_sq < 1e6:
                             min_sum = sum_sq
-                            best_mass1, best_phase1, best_mass2, best_phase2 = m1, p1, m2, p2
+                            best_mass1, best_phase1, best_mass2, best_phase2 = float(m1), float(p1), float(m2), float(p2)
                             logger.info(f"Новый минимум: m1={m1:.4f}кг, p1={p1:.1f}°, m2={m2:.4f}кг, p2={p2:.1f}°, √sum_sq={np.sqrt(min_sum):.3f}")
     else:
         logger.warning("Грубый поиск не нашёл подходящего решения, возвращены нулевые грузы")
@@ -223,40 +223,223 @@ def find_optimal_gruz(pusk0, sensitivities, max_mass=3.0, coarse_mass_step=0.1, 
         residuals.append(row)
     return best_mass1, best_phase1, best_mass2, best_phase2, np.sqrt(min_sum), residuals
 
-def classic_vector_balance(pusk0, pusk1, pusk2, gruzes, probe_weights=[1.0, 2.0], speed_weights=[2500.0, 3000.0]):
-    """Классический метод балансировки с расчётом корректирующих грузов."""
+def find_classical_gruz(pusk0, sensitivities, max_mass=3.0, coarse_mass_step=0.1, fine_mass_step=0.01, coarse_phase_step=10, fine_phase_step=1):
+    """
+    Находит оптимальные грузы для минимизации вибрации с классическим поопорным подходом.
+    Сначала оптимизирует плоскость 1, затем плоскость 2.
+    """
+    n_probes = 2  # Только 1-я кр. 1 оп. и 1-я кр. 2 оп.
+    n_speeds = 3
+    speed_weights = [1.0, 1.0, 1.0]  # Равномерные веса
+
+    # Этап 1: Оптимизация плоскости 1 (игнорируем плоскость 2)
+    logger.info("Этап 1: Оптимизация плоскости 1")
+    best_mass1, best_phase1, min_sum1 = 0.0, 0.0, float('inf')
+    
+    # Грубый поиск для плоскости 1
+    coarse_best1 = None
+    for mass1 in np.arange(0, max_mass + coarse_mass_step/2, coarse_mass_step):
+        for phase1 in range(0, 360, coarse_phase_step):
+            sum_sq = 0
+            valid_modes = 0
+            for i in range(n_speeds):
+                all_zero = all(parse_vector_input(pusk0[i][j])[0] == 0 for j in range(n_probes) if parse_vector_input(pusk0[i][j]))
+                if all_zero:
+                    continue
+                row_sum_sq = 0
+                for j in range(n_probes):
+                    v0 = parse_vector_input(pusk0[i][j]) or (0, 0)
+                    if v0[0] == 0:
+                        continue
+                    x0, y0 = polar_to_cartesian(*v0)
+                    sens1 = sensitivities['plane1'][i][j]
+                    # Коррекция только плоскости 1
+                    x_corr = x0 - (mass1 * np.cos(np.deg2rad(phase1)) * sens1[0])
+                    y_corr = y0 - (mass1 * np.sin(np.deg2rad(phase1)) * sens1[0])
+                    amp, _ = cartesian_to_polar(x_corr, y_corr)
+                    row_sum_sq += amp ** 2
+                if row_sum_sq > 0:
+                    sum_sq += row_sum_sq * (speed_weights[i] / 1.0)
+                    valid_modes += 1
+            if valid_modes > 0:
+                sum_sq /= valid_modes
+            if sum_sq < min_sum1 and sum_sq < 1e6:
+                min_sum1 = sum_sq
+                coarse_best1 = (float(mass1), float(phase1))
+
+    # Тонкий поиск для плоскости 1
+    if coarse_best1:
+        mass1, phase1 = coarse_best1
+        mass_range = np.arange(max(0, mass1 - coarse_mass_step), min(max_mass, mass1 + coarse_mass_step) + fine_mass_step, fine_mass_step)
+        phase_range = range(max(0, int(phase1 - coarse_phase_step)), min(360, int(phase1 + coarse_phase_step) + fine_phase_step), fine_phase_step)
+        for m1 in mass_range:
+            for p1 in phase_range:
+                sum_sq = 0
+                valid_modes = 0
+                for i in range(n_speeds):
+                    all_zero = all(parse_vector_input(pusk0[i][j])[0] == 0 for j in range(n_probes) if parse_vector_input(pusk0[i][j]))
+                    if all_zero:
+                        continue
+                    row_sum_sq = 0
+                    for j in range(n_probes):
+                        v0 = parse_vector_input(pusk0[i][j]) or (0, 0)
+                        if v0[0] == 0:
+                            continue
+                        x0, y0 = polar_to_cartesian(*v0)
+                        sens1 = sensitivities['plane1'][i][j]
+                        # Коррекция только плоскости 1
+                        x_corr = x0 - (m1 * np.cos(np.deg2rad(p1)) * sens1[0])
+                        y_corr = y0 - (m1 * np.sin(np.deg2rad(p1)) * sens1[0])
+                        amp, _ = cartesian_to_polar(x_corr, y_corr)
+                        row_sum_sq += amp ** 2
+                    if row_sum_sq > 0:
+                        sum_sq += row_sum_sq * (speed_weights[i] / 1.0)
+                        valid_modes += 1
+                if valid_modes > 0:
+                    sum_sq /= valid_modes
+                if sum_sq < min_sum1 and sum_sq < 1e6:
+                    min_sum1 = sum_sq
+                    best_mass1, best_phase1 = float(m1), float(p1)
+                    logger.info(f"Плоскость 1 - новый минимум: m1={m1:.4f}кг, p1={p1:.1f}°, √sum_sq={np.sqrt(min_sum1):.3f}")
+
+    logger.info(f"Оптимальная плоскость 1: масса={best_mass1:.4f}кг, фаза={best_phase1:.1f}°")
+
+    # Этап 2: Оптимизация плоскости 2 (учитываем уже найденную плоскость 1)
+    logger.info("Этап 2: Оптимизация плоскости 2")
+    best_mass2, best_phase2, min_sum2 = 0.0, 0.0, float('inf')
+    
+    # Грубый поиск для плоскости 2
+    coarse_best2 = None
+    for mass2 in np.arange(0, max_mass + coarse_mass_step/2, coarse_mass_step):
+        for phase2 in range(0, 360, coarse_phase_step):
+            sum_sq = 0
+            valid_modes = 0
+            for i in range(n_speeds):
+                all_zero = all(parse_vector_input(pusk0[i][j])[0] == 0 for j in range(n_probes) if parse_vector_input(pusk0[i][j]))
+                if all_zero:
+                    continue
+                row_sum_sq = 0
+                for j in range(n_probes):
+                    v0 = parse_vector_input(pusk0[i][j]) or (0, 0)
+                    if v0[0] == 0:
+                        continue
+                    x0, y0 = polar_to_cartesian(*v0)
+                    sens1 = sensitivities['plane1'][i][j]
+                    sens2 = sensitivities['plane2'][i][j]
+                    # Коррекция обеих плоскостей (плоскость 1 зафиксирована)
+                    x_corr = x0 - (best_mass1 * np.cos(np.deg2rad(best_phase1)) * sens1[0] +
+                                  mass2 * np.cos(np.deg2rad(phase2)) * sens2[0])
+                    y_corr = y0 - (best_mass1 * np.sin(np.deg2rad(best_phase1)) * sens1[0] +
+                                  mass2 * np.sin(np.deg2rad(phase2)) * sens2[0])
+                    amp, _ = cartesian_to_polar(x_corr, y_corr)
+                    row_sum_sq += amp ** 2
+                if row_sum_sq > 0:
+                    sum_sq += row_sum_sq * (speed_weights[i] / 1.0)
+                    valid_modes += 1
+            if valid_modes > 0:
+                sum_sq /= valid_modes
+            if sum_sq < min_sum2 and sum_sq < 1e6:
+                min_sum2 = sum_sq
+                coarse_best2 = (float(mass2), float(phase2))
+
+    # Тонкий поиск для плоскости 2
+    if coarse_best2:
+        mass2, phase2 = coarse_best2
+        mass_range = np.arange(max(0, mass2 - coarse_mass_step), min(max_mass, mass2 + coarse_mass_step) + fine_mass_step, fine_mass_step)
+        phase_range = range(max(0, int(phase2 - coarse_phase_step)), min(360, int(phase2 + coarse_phase_step) + fine_phase_step), fine_phase_step)
+        for m2 in mass_range:
+            for p2 in phase_range:
+                sum_sq = 0
+                valid_modes = 0
+                for i in range(n_speeds):
+                    all_zero = all(parse_vector_input(pusk0[i][j])[0] == 0 for j in range(n_probes) if parse_vector_input(pusk0[i][j]))
+                    if all_zero:
+                        continue
+                    row_sum_sq = 0
+                    for j in range(n_probes):
+                        v0 = parse_vector_input(pusk0[i][j]) or (0, 0)
+                        if v0[0] == 0:
+                            continue
+                        x0, y0 = polar_to_cartesian(*v0)
+                        sens1 = sensitivities['plane1'][i][j]
+                        sens2 = sensitivities['plane2'][i][j]
+                        # Коррекция обеих плоскостей (плоскость 1 зафиксирована)
+                        x_corr = x0 - (best_mass1 * np.cos(np.deg2rad(best_phase1)) * sens1[0] +
+                                      m2 * np.cos(np.deg2rad(p2)) * sens2[0])
+                        y_corr = y0 - (best_mass1 * np.sin(np.deg2rad(best_phase1)) * sens1[0] +
+                                      m2 * np.sin(np.deg2rad(p2)) * sens2[0])
+                        amp, _ = cartesian_to_polar(x_corr, y_corr)
+                        row_sum_sq += amp ** 2
+                    if row_sum_sq > 0:
+                        sum_sq += row_sum_sq * (speed_weights[i] / 1.0)
+                        valid_modes += 1
+                if valid_modes > 0:
+                    sum_sq /= valid_modes
+                if sum_sq < min_sum2 and sum_sq < 1e6:
+                    min_sum2 = sum_sq
+                    best_mass2, best_phase2 = float(m2), float(p2)
+                    logger.info(f"Плоскость 2 - новый минимум: m2={m2:.4f}кг, p2={p2:.1f}°, √sum_sq={np.sqrt(min_sum2):.3f}")
+
+    logger.info(f"Оптимальная плоскость 2: масса={best_mass2:.4f}кг, фаза={best_phase2:.1f}°")
+
+    # Расчет итоговых остатков с обеими плоскостями
+    residuals = []
+    final_sum_sq = 0
+    valid_modes = 0
+    for i in range(n_speeds):
+        row = []
+        row_sum_sq = 0
+        for j in range(n_probes):
+            v0 = parse_vector_input(pusk0[i][j]) or (0, 0)
+            if v0[0] == 0:
+                row.append(None)
+                continue
+            x0, y0 = polar_to_cartesian(*v0)
+            sens1 = sensitivities['plane1'][i][j]
+            sens2 = sensitivities['plane2'][i][j]
+            x_corr = x0 - (best_mass1 * np.cos(np.deg2rad(best_phase1)) * sens1[0] +
+                          best_mass2 * np.cos(np.deg2rad(best_phase2)) * sens2[0])
+            y_corr = y0 - (best_mass1 * np.sin(np.deg2rad(best_phase1)) * sens1[0] +
+                          best_mass2 * np.sin(np.deg2rad(best_phase2)) * sens2[0])
+            amp, ang = cartesian_to_polar(x_corr, y_corr)
+            row.append((amp, ang))
+            row_sum_sq += amp ** 2
+        residuals.append(row)
+        if row_sum_sq > 0:
+            final_sum_sq += row_sum_sq * (speed_weights[i] / 1.0)
+            valid_modes += 1
+    
+    if valid_modes > 0:
+        final_sum_sq /= valid_modes
+    
+    logger.info(f"Классический расчет завершен. Итоговый √sum_sq={np.sqrt(final_sum_sq):.3f}")
+    
+    return best_mass1, best_phase1, best_mass2, best_phase2, np.sqrt(final_sum_sq), residuals
+
+def classic_vector_balance(pusk0, pusk1, pusk2, gruzes, probe_weights=[1.0, 2.0], speed_weights=[2500.0, 3000.0], unit_conversion_factor=1.0):
+    """Классический метод балансировки с расчётом корректирующих грузов по новому алгоритму."""
     if len(gruzes) < 2:
         logger.warning("Недостаточно грузов для расчёта классической балансировки")
-        return [[(0, 0), (0, 0)] for _ in range(3)]
+        return [[(0, 0), (0, 0)] for _ in range(3)], []
 
+    logger.info("Начинаем классический расчет балансировки")
+    
+    # Вычисляем чувствительности
+    sensitivities = calculate_sensitivity(pusk0, pusk1, pusk2, gruzes, unit_conversion_factor)
+    
+    # Используем новый классический метод поопорной оптимизации
+    best_mass1, best_phase1, best_mass2, best_phase2, min_sum, residuals = find_classical_gruz(
+        pusk0, sensitivities, max_mass=3.0
+    )
+    
+    # Формируем результат в том же формате, что и раньше
     result = []
-    n_probes = 2
-    n_speeds = 3
-    for i in range(n_speeds):
-        v0 = [np.array(polar_to_cartesian(*parse_vector_input(pusk0[i][j]))) if parse_vector_input(pusk0[i][j]) else np.array([0.0, 0.0]) for j in range(n_probes)]
-        v1 = [np.array(polar_to_cartesian(*parse_vector_input(pusk1[i][j]))) if parse_vector_input(pusk1[i][j]) else np.array([0.0, 0.0]) for j in range(n_probes)]
-        v2 = [np.array(polar_to_cartesian(*parse_vector_input(pusk2[i][j]))) if pusk2 and parse_vector_input(pusk2[i][j]) else np.array([0.0, 0.0]) for j in range(n_probes)]
-
-        dv = [v1[j] - v0[j] for j in range(n_probes)]
-        mass1, phase1 = gruzes[0]
-        mass2, phase2 = gruzes[1]
-        corrections = []
-        for j in range(n_probes):
-            dv_mod, dv_ang = cartesian_to_polar(*dv[j]) if np.hypot(*dv[j]) > 1e-8 else (0, 0)
-            v0_mod, v0_ang = cartesian_to_polar(*v0[j])
-            if dv_mod > 1e-8 and mass1 != 0:
-                m_corr = (v0_mod / dv_mod * mass1) * probe_weights[j] * speed_weights[i % 2]
-                phi_corr = (dv_ang - v0_ang + phase1) % 360
-            else:
-                m_corr, phi_corr = 0, 0
-            corrections.append((m_corr, phi_corr))
-
-        m1_avg = np.mean([c[0] for c in corrections[:n_probes]])
-        phi1_avg = mean_angle_deg([c[1] for c in corrections[:n_probes]])
-        m2_avg = np.mean([c[0] for c in corrections[n_probes:]]) if len(corrections) > n_probes else 0
-        phi2_avg = mean_angle_deg([c[1] for c in corrections[n_probes:]]) if len(corrections) > n_probes else 0
-        result.append([(m1_avg, phi1_avg), (m2_avg, phi2_avg)])
-    return result
+    for i in range(3):  # 3 режима
+        result.append([(best_mass1, best_phase1), (best_mass2, best_phase2)])
+    
+    logger.info(f"Классический расчет завершен: м1={best_mass1:.4f}кг, φ1={best_phase1:.1f}°, м2={best_mass2:.4f}кг, φ2={best_phase2:.1f}°")
+    
+    return result, residuals
 
 def calc_residuals_after_balance(pusk0, reco_masses, reco_phis):
     """Вычисляет остатки вибрации после применения корректирующих грузов."""
@@ -512,7 +695,13 @@ class BalancingApp:
             if name not in [name1, name2] and 'frame' in self.tabs[name] and hasattr(self.tabs[name]['frame'], 'entries'):
                 pusk2 = get_pusk(self.tabs[name])
                 break
-        results = classic_vector_balance(pusk0, pusk1, pusk2, gruzes, probe_weights=[1.0, 2.0], speed_weights=[2500.0, 3000.0])
+        
+        # Используем новый классический метод
+        results, residuals = classic_vector_balance(pusk0, pusk1, pusk2, gruzes, 
+                                                   probe_weights=[1.0, 2.0], 
+                                                   speed_weights=[2500.0, 3000.0], 
+                                                   unit_conversion_factor=self.unit_conversion_factor.get())
+        
         n_plo = len(results[0])
         ms = [[] for _ in range(n_plo)]
         phis = [[] for _ in range(n_plo)]
@@ -522,6 +711,7 @@ class BalancingApp:
                 phis[p].append(res[p][1])
         ms_avg = [np.mean(m) for m in ms]
         phis_avg = [mean_angle_deg(phi) for phi in phis]
+        
         dkv_frame = tk.LabelFrame(self.result_frame, text=f"Классический расчёт ({scheme})", padx=10, pady=10)
         dkv_frame.pack(fill='x', pady=5, side='top', anchor='n')
         tk.Label(dkv_frame, text="Режим", font=('Arial',10,'bold'), width=12).grid(row=0,column=0)
@@ -538,22 +728,31 @@ class BalancingApp:
         for p in range(n_plo):
             tk.Label(dkv_frame, text=f"{ms_avg[p]:.4f}", font=('Arial',10,'bold')).grid(row=1+len(results),column=1+2*p)
             tk.Label(dkv_frame, text=f"{phis_avg[p]:.1f}°", font=('Arial',10,'bold')).grid(row=1+len(results),column=2+2*p)
-        residuals = calc_residuals_after_balance(pusk0, ms_avg, phis_avg)
+        
+        # Отображаем остатки из классического расчета
         resid_frame = tk.LabelFrame(self.result_frame, text="Остатки вибрации после коррекции", padx=10, pady=10)
         resid_frame.pack(fill='x', pady=5, side='top', anchor='n')
         n_probes = 2
         tk.Label(resid_frame, text="Режим", font=('Arial',10,'bold'), width=12).grid(row=0,column=0)
         for p in range(n_probes):
             tk.Label(resid_frame, text=f"Оп.{p+1}", font=('Arial',10,'bold'), width=12).grid(row=0,column=1+p)
+        
+        unit = "мм/с" if self.unit_conversion_factor.get() == 1.0 else "мкм"
         for i, row in enumerate(residuals):
             tk.Label(resid_frame, text=f"{i+1} (1 критика, 2 критика, Раб. обороты)").grid(row=i+1,column=0)
-            for p, (amp, ang) in enumerate(row):
-                tk.Label(resid_frame, text=f"{amp} / {ang}").grid(row=i+1,column=1+p)
+            for p, val in enumerate(row[:n_probes]):
+                if val is not None:
+                    amp, ang = val
+                    text = f"{amp:.3f} / {ang:.1f}°"
+                else:
+                    text = "— / —"
+                tk.Label(resid_frame, text=text).grid(row=i+1,column=1+p)
+        
         btn = tk.Button(self.result_frame, text="Показать таблицу ДКВ",
                         command=lambda: self.show_dkv_table(pusk0, pusk1, name1, name2),
                         bg="#fbc02d", fg="black")
         btn.pack(side='top', pady=6)
-        explain_label = tk.Label(self.result_frame, text=f"Расчёт выполнен между пусками: {name1} и {name2}.", fg="gray", font=('Arial', 10, 'italic'))
+        explain_label = tk.Label(self.result_frame, text=f"Расчёт выполнен между пусками: {name1} и {name2}. Использован классический поопорный метод.", fg="gray", font=('Arial', 10, 'italic'))
         explain_label.pack(side='top', pady=4)
 
     def show_dkv_table(self, pusk_a, pusk_b, name_a, name_b):
