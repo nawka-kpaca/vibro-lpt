@@ -116,21 +116,37 @@ def calculate_sensitivity(pusk0, pusk1, pusk2, gruzes, unit_conversion_factor=1.
 
     return sensitivities
 
-def find_optimal_gruz(pusk0, sensitivities, max_mass=3.0, coarse_mass_step=0.1, fine_mass_step=0.01, coarse_phase_step=10, fine_phase_step=1):
+def find_optimal_gruz(pusk0, sensitivities, scheme="Единичная", max_mass=3.0, coarse_mass_step=0.1, fine_mass_step=0.01, coarse_phase_step=10, fine_phase_step=1):
     """
     Находит оптимальные грузы для минимизации вибрации с двухэтапным поиском.
+    Учитывает схему грузов: симметричная, кососимметричная или другие.
     """
     best_mass1, best_phase1, best_mass2, best_phase2, min_sum = None, None, None, None, float('inf')
     n_probes = 2  # Только 1-я кр. 1 оп. и 1-я кр. 2 оп.
     n_speeds = 3
     speed_weights = [1.0, 1.0, 1.0]  # Равномерные веса
+    
+    # Определяем стратегию оптимизации на основе схемы
+    is_symmetric = scheme == "Симметричная"
+    is_antisymmetric = scheme == "Кососимметричная"
 
     # Грубый поиск
     coarse_best = None
     for mass1 in np.arange(0, max_mass + coarse_mass_step/2, coarse_mass_step):
         for phase1 in range(0, 360, coarse_phase_step):
-            for mass2 in np.arange(0, max_mass + coarse_mass_step/2, coarse_mass_step):
-                for phase2 in range(0, 360, coarse_phase_step):
+            if is_symmetric or is_antisymmetric:
+                # Для симметричной и кососимметричной схем оптимизируем только первую плоскость
+                mass2 = mass1
+                phase2 = phase1 if is_symmetric else (phase1 + 180) % 360
+                mass2_range = [mass2]
+                phase2_range = [phase2]
+            else:
+                # Для других схем оптимизируем обе плоскости независимо
+                mass2_range = np.arange(0, max_mass + coarse_mass_step/2, coarse_mass_step)
+                phase2_range = range(0, 360, coarse_phase_step)
+            
+            for mass2 in mass2_range:
+                for phase2 in phase2_range:
                     sum_sq = 0
                     valid_modes = 0
                     for i in range(n_speeds):
@@ -167,8 +183,19 @@ def find_optimal_gruz(pusk0, sensitivities, max_mass=3.0, coarse_mass_step=0.1, 
         phase_range = range(max(0, phase1 - coarse_phase_step), min(360, phase1 + coarse_phase_step) + fine_phase_step, fine_phase_step)
         for m1 in mass_range:
             for p1 in phase_range:
-                for m2 in np.arange(max(0, mass2 - coarse_mass_step), min(max_mass, mass2 + coarse_mass_step) + fine_mass_step, fine_mass_step):
-                    for p2 in range(max(0, phase2 - coarse_phase_step), min(360, phase2 + coarse_phase_step) + fine_phase_step, fine_phase_step):
+                if is_symmetric or is_antisymmetric:
+                    # Для симметричной и кососимметричной схем используем зависимые параметры
+                    m2 = m1
+                    p2 = p1 if is_symmetric else (p1 + 180) % 360
+                    m2_range = [m2]
+                    p2_range = [p2]
+                else:
+                    # Для других схем оптимизируем обе плоскости независимо
+                    m2_range = np.arange(max(0, mass2 - coarse_mass_step), min(max_mass, mass2 + coarse_mass_step) + fine_mass_step, fine_mass_step)
+                    p2_range = range(max(0, phase2 - coarse_phase_step), min(360, phase2 + coarse_phase_step) + fine_phase_step, fine_phase_step)
+                
+                for m2 in m2_range:
+                    for p2 in p2_range:
                         sum_sq = 0
                         valid_modes = 0
                         for i in range(n_speeds):
@@ -200,7 +227,13 @@ def find_optimal_gruz(pusk0, sensitivities, max_mass=3.0, coarse_mass_step=0.1, 
                             logger.info(f"Новый минимум: m1={m1:.4f}кг, p1={p1:.1f}°, m2={m2:.4f}кг, p2={p2:.1f}°, √sum_sq={np.sqrt(min_sum):.3f}")
     else:
         logger.warning("Грубый поиск не нашёл подходящего решения, возвращены нулевые грузы")
-        best_mass1, best_phase1, best_mass2, best_phase2 = 0.0, 0.0, 0.0, 0.0
+        best_mass1, best_phase1 = 0.0, 0.0
+        if is_symmetric:
+            best_mass2, best_phase2 = best_mass1, best_phase1
+        elif is_antisymmetric:
+            best_mass2, best_phase2 = best_mass1, (best_phase1 + 180) % 360
+        else:
+            best_mass2, best_phase2 = 0.0, 0.0
 
     # Расчет остатков
     residuals = []
@@ -441,29 +474,38 @@ class BalancingApp:
             gruzes.append(parse_vector_input(entry.get()) or (0, 0))
         for gruz_frame, entry, _ in tab2['frame'].gruzes:
             gruzes.append(parse_vector_input(entry.get()) or (0, 0))
+        # Получаем схему грузов из вкладки с грузами (обычно tab1)
+        scheme = tab1['frame'].scheme_var.get()
         self.root.config(cursor="wait")
-        threading.Thread(target=self.compute_optimal_gruz_thread, args=(pusk0, pusk1, pusk2, gruzes), daemon=True).start()
+        threading.Thread(target=self.compute_optimal_gruz_thread, args=(pusk0, pusk1, pusk2, gruzes, scheme), daemon=True).start()
 
-    def compute_optimal_gruz_thread(self, pusk0, pusk1, pusk2, gruzes):
+    def compute_optimal_gruz_thread(self, pusk0, pusk1, pusk2, gruzes, scheme):
         """Выполняет расчёт оптимального груза в отдельном потоке."""
         try:
             sensitivities = calculate_sensitivity(pusk0, pusk1, pusk2, gruzes, self.unit_conversion_factor.get())
-            m1, p1, m2, p2, min_sum, residuals = find_optimal_gruz(pusk0, sensitivities, max_mass=3.0)
-            self.root.after(0, lambda m1=m1, p1=p1, m2=m2, p2=p2, min_sum=min_sum, residuals=residuals, pusk0=pusk0:
-                            self.display_optimal_result(m1, p1, m2, p2, min_sum, residuals, pusk0))
+            m1, p1, m2, p2, min_sum, residuals = find_optimal_gruz(pusk0, sensitivities, scheme, max_mass=3.0)
+            self.root.after(0, lambda m1=m1, p1=p1, m2=m2, p2=p2, min_sum=min_sum, residuals=residuals, pusk0=pusk0, scheme=scheme:
+                            self.display_optimal_result(m1, p1, m2, p2, min_sum, residuals, pusk0, scheme))
         except Exception as e:
             logger.error(f"Ошибка в расчёте оптимального груза: {e}")
             self.root.after(0, lambda e=e: messagebox.showerror("Ошибка", f"Ошибка в расчёте оптимального груза: {e}"))
         finally:
             self.root.after(0, lambda: self.root.config(cursor=""))
 
-    def display_optimal_result(self, m1, p1, m2, p2, min_sum, residuals, pusk0):
+    def display_optimal_result(self, m1, p1, m2, p2, min_sum, residuals, pusk0, scheme):
         """Отображает результаты оптимального подбора грузов."""
         if m1 is None or min_sum > 1e6:
             messagebox.showinfo("Подбор груза", "Оптимальный груз не найден или результат аномален.")
             return
         unit = "мм/с" if self.unit_conversion_factor.get() == 1.0 else "мкм"
-        text = f"Оптимальные грузы для плоскостей:\nПлоскость 1: Масса: {m1:.4f} кг, Фаза: {p1:.1f}°\nПлоскость 2: Масса: {m2:.4f} кг, Фаза: {p2:.1f}°\n√(сумма квадратов остатков): {min_sum:.3f} {unit}\n"
+        text = f"Оптимальные грузы для плоскостей (схема: {scheme}):\nПлоскость 1: Масса: {m1:.4f} кг, Фаза: {p1:.1f}°\nПлоскость 2: Масса: {m2:.4f} кг, Фаза: {p2:.1f}°\n√(сумма квадратов остатков): {min_sum:.3f} {unit}\n"
+        
+        # Дополнительная информация о связи параметров для схем
+        if scheme == "Симметричная":
+            text += "Симметричная схема: масса2 = масса1, фаза2 = фаза1\n"
+        elif scheme == "Кососимметричная":
+            text += "Кососимметричная схема: масса2 = масса1, фаза2 = фаза1 + 180°\n"
+        
         text += "Остатки вибрации по режимам/опорам (1-я кр. 1 оп., 1-я кр. 2 оп.):\n"
         for i, row in enumerate(residuals):
             line = f"Режим {i+1} (1 критика, 2 критика, Раб. обороты): "
