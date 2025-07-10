@@ -116,9 +116,171 @@ def calculate_sensitivity(pusk0, pusk1, pusk2, gruzes, unit_conversion_factor=1.
 
     return sensitivities
 
+def find_optimal_gruz_static_dynamic(pusk0, pusk1, pusk2, max_mass=3.0, coarse_mass_step=0.1, fine_mass_step=0.01, coarse_phase_step=10, fine_phase_step=1):
+    """
+    Находит оптимальные грузы для минимизации вибрации с использованием статики и динамики.
+    Выполняет векторное сложение статической и динамической составляющей.
+    """
+    best_mass1, best_phase1, best_mass2, best_phase2, min_sum = None, None, None, None, float('inf')
+    n_probes = 2  # Только 1-я кр. 1 оп. и 1-я кр. 2 оп.
+    n_speeds = 3
+    speed_weights = [1.0, 1.0, 1.0]  # Равномерные веса
+
+    # Вычисляем статику и динамику для каждого режима/опоры
+    static_dynamic_data = []
+    for i in range(n_speeds):
+        row = []
+        for j in range(n_probes):
+            v1 = parse_vector_input(pusk0[i][j]) or (0, 0)
+            v2 = parse_vector_input(pusk1[i][j]) or (0, 0)
+            if v1[0] > 0 and v2[0] > 0:
+                statica, dynamica = calculate_statica_dynamica(v1, v2)
+                row.append((statica, dynamica))
+            else:
+                row.append(((0, 0), (0, 0)))
+        static_dynamic_data.append(row)
+
+    # Грубый поиск
+    coarse_best = None
+    for mass1 in np.arange(0, max_mass + coarse_mass_step/2, coarse_mass_step):
+        for phase1 in range(0, 360, coarse_phase_step):
+            for mass2 in np.arange(0, max_mass + coarse_mass_step/2, coarse_mass_step):
+                for phase2 in range(0, 360, coarse_phase_step):
+                    sum_sq = 0
+                    valid_modes = 0
+                    for i in range(n_speeds):
+                        row_sum_sq = 0
+                        has_valid_data = False
+                        for j in range(n_probes):
+                            statica, dynamica = static_dynamic_data[i][j]
+                            if statica[0] == 0 and dynamica[0] == 0:
+                                continue
+                            has_valid_data = True
+                            
+                            # Векторное сложение статической и динамической составляющей
+                            static_x, static_y = polar_to_cartesian(*statica)
+                            dynamic_x, dynamic_y = polar_to_cartesian(*dynamica)
+                            
+                            # Результирующий вектор без коррекции
+                            result_x = static_x + dynamic_x
+                            result_y = static_y + dynamic_y
+                            
+                            # Применяем коррекцию
+                            corr1_x = mass1 * np.cos(np.deg2rad(phase1))
+                            corr1_y = mass1 * np.sin(np.deg2rad(phase1))
+                            corr2_x = mass2 * np.cos(np.deg2rad(phase2))
+                            corr2_y = mass2 * np.sin(np.deg2rad(phase2))
+                            
+                            # Остаток после коррекции
+                            final_x = result_x - (corr1_x + corr2_x)
+                            final_y = result_y - (corr1_y + corr2_y)
+                            
+                            amp, _ = cartesian_to_polar(final_x, final_y)
+                            row_sum_sq += amp ** 2
+                        
+                        if has_valid_data:
+                            sum_sq += row_sum_sq * speed_weights[i]
+                            valid_modes += 1
+                    
+                    if valid_modes > 0:
+                        sum_sq /= valid_modes
+                    if sum_sq < min_sum and sum_sq < 1e6:
+                        min_sum = sum_sq
+                        coarse_best = (mass1, phase1, mass2, phase2)
+
+    # Тонкий поиск вокруг лучшей точки
+    if coarse_best:
+        mass1, phase1, mass2, phase2 = coarse_best
+        mass_range = np.arange(max(0, mass1 - coarse_mass_step), min(max_mass, mass1 + coarse_mass_step) + fine_mass_step, fine_mass_step)
+        phase_range = range(max(0, phase1 - coarse_phase_step), min(360, phase1 + coarse_phase_step) + fine_phase_step, fine_phase_step)
+        for m1 in mass_range:
+            for p1 in phase_range:
+                for m2 in np.arange(max(0, mass2 - coarse_mass_step), min(max_mass, mass2 + coarse_mass_step) + fine_mass_step, fine_mass_step):
+                    for p2 in range(max(0, phase2 - coarse_phase_step), min(360, phase2 + coarse_phase_step) + fine_phase_step, fine_phase_step):
+                        sum_sq = 0
+                        valid_modes = 0
+                        for i in range(n_speeds):
+                            row_sum_sq = 0
+                            has_valid_data = False
+                            for j in range(n_probes):
+                                statica, dynamica = static_dynamic_data[i][j]
+                                if statica[0] == 0 and dynamica[0] == 0:
+                                    continue
+                                has_valid_data = True
+                                
+                                # Векторное сложение статической и динамической составляющей
+                                static_x, static_y = polar_to_cartesian(*statica)
+                                dynamic_x, dynamic_y = polar_to_cartesian(*dynamica)
+                                
+                                # Результирующий вектор без коррекции
+                                result_x = static_x + dynamic_x
+                                result_y = static_y + dynamic_y
+                                
+                                # Применяем коррекцию
+                                corr1_x = m1 * np.cos(np.deg2rad(p1))
+                                corr1_y = m1 * np.sin(np.deg2rad(p1))
+                                corr2_x = m2 * np.cos(np.deg2rad(p2))
+                                corr2_y = m2 * np.sin(np.deg2rad(p2))
+                                
+                                # Остаток после коррекции
+                                final_x = result_x - (corr1_x + corr2_x)
+                                final_y = result_y - (corr1_y + corr2_y)
+                                
+                                amp, _ = cartesian_to_polar(final_x, final_y)
+                                row_sum_sq += amp ** 2
+                            
+                            if has_valid_data:
+                                sum_sq += row_sum_sq * speed_weights[i]
+                                valid_modes += 1
+                        
+                        if valid_modes > 0:
+                            sum_sq /= valid_modes
+                        if sum_sq < min_sum and sum_sq < 1e6:
+                            min_sum = sum_sq
+                            best_mass1, best_phase1, best_mass2, best_phase2 = m1, p1, m2, p2
+                            logger.info(f"Новый минимум (статика/динамика): m1={m1:.4f}кг, p1={p1:.1f}°, m2={m2:.4f}кг, p2={p2:.1f}°, √sum_sq={np.sqrt(min_sum):.3f}")
+    else:
+        logger.warning("Грубый поиск не нашёл подходящего решения, возвращены нулевые грузы")
+        best_mass1, best_phase1, best_mass2, best_phase2 = 0.0, 0.0, 0.0, 0.0
+
+    # Расчет остатков
+    residuals = []
+    for i in range(n_speeds):
+        row = []
+        for j in range(n_probes):
+            statica, dynamica = static_dynamic_data[i][j]
+            if statica[0] == 0 and dynamica[0] == 0:
+                row.append(None)
+                continue
+            
+            # Векторное сложение статической и динамической составляющей
+            static_x, static_y = polar_to_cartesian(*statica)
+            dynamic_x, dynamic_y = polar_to_cartesian(*dynamica)
+            
+            # Результирующий вектор без коррекции
+            result_x = static_x + dynamic_x
+            result_y = static_y + dynamic_y
+            
+            # Применяем коррекцию
+            corr1_x = best_mass1 * np.cos(np.deg2rad(best_phase1))
+            corr1_y = best_mass1 * np.sin(np.deg2rad(best_phase1))
+            corr2_x = best_mass2 * np.cos(np.deg2rad(best_phase2))
+            corr2_y = best_mass2 * np.sin(np.deg2rad(best_phase2))
+            
+            # Остаток после коррекции
+            final_x = result_x - (corr1_x + corr2_x)
+            final_y = result_y - (corr1_y + corr2_y)
+            
+            amp, ang = cartesian_to_polar(final_x, final_y)
+            row.append((amp, ang))
+        residuals.append(row)
+    
+    return best_mass1, best_phase1, best_mass2, best_phase2, np.sqrt(min_sum), residuals
+
 def find_optimal_gruz(pusk0, sensitivities, max_mass=3.0, coarse_mass_step=0.1, fine_mass_step=0.01, coarse_phase_step=10, fine_phase_step=1):
     """
     Находит оптимальные грузы для минимизации вибрации с двухэтапным поиском.
+    Классический алгоритм по опорам (сохранён для совместимости).
     """
     best_mass1, best_phase1, best_mass2, best_phase2, min_sum = None, None, None, None, float('inf')
     n_probes = 2  # Только 1-я кр. 1 оп. и 1-я кр. 2 оп.
@@ -447,8 +609,8 @@ class BalancingApp:
     def compute_optimal_gruz_thread(self, pusk0, pusk1, pusk2, gruzes):
         """Выполняет расчёт оптимального груза в отдельном потоке."""
         try:
-            sensitivities = calculate_sensitivity(pusk0, pusk1, pusk2, gruzes, self.unit_conversion_factor.get())
-            m1, p1, m2, p2, min_sum, residuals = find_optimal_gruz(pusk0, sensitivities, max_mass=3.0)
+            # Используем новый алгоритм по статике и динамике
+            m1, p1, m2, p2, min_sum, residuals = find_optimal_gruz_static_dynamic(pusk0, pusk1, pusk2, max_mass=3.0)
             self.root.after(0, lambda m1=m1, p1=p1, m2=m2, p2=p2, min_sum=min_sum, residuals=residuals, pusk0=pusk0:
                             self.display_optimal_result(m1, p1, m2, p2, min_sum, residuals, pusk0))
         except Exception as e:
@@ -463,8 +625,8 @@ class BalancingApp:
             messagebox.showinfo("Подбор груза", "Оптимальный груз не найден или результат аномален.")
             return
         unit = "мм/с" if self.unit_conversion_factor.get() == 1.0 else "мкм"
-        text = f"Оптимальные грузы для плоскостей:\nПлоскость 1: Масса: {m1:.4f} кг, Фаза: {p1:.1f}°\nПлоскость 2: Масса: {m2:.4f} кг, Фаза: {p2:.1f}°\n√(сумма квадратов остатков): {min_sum:.3f} {unit}\n"
-        text += "Остатки вибрации по режимам/опорам (1-я кр. 1 оп., 1-я кр. 2 оп.):\n"
+        text = f"Оптимальные грузы (статика/динамика) для плоскостей:\nПлоскость 1: Масса: {m1:.4f} кг, Фаза: {p1:.1f}°\nПлоскость 2: Масса: {m2:.4f} кг, Фаза: {p2:.1f}°\n√(сумма квадратов остатков): {min_sum:.3f} {unit}\n"
+        text += "Остатки вибрации по режимам/опорам (векторное сложение статики и динамики):\n"
         for i, row in enumerate(residuals):
             line = f"Режим {i+1} (1 критика, 2 критика, Раб. обороты): "
             for j, val in enumerate(row[:2]):
@@ -557,27 +719,109 @@ class BalancingApp:
         explain_label.pack(side='top', pady=4)
 
     def show_dkv_table(self, pusk_a, pusk_b, name_a, name_b):
-        """Отображает таблицу векторной разницы между пусками."""
+        """Отображает таблицу векторной разницы между пусками с выбором метода расчёта."""
         dkv_win = tk.Toplevel(self.root)
         dkv_win.title(f"Векторная разница Δ = {name_b} – {name_a}")
-        tk.Label(dkv_win, text="Режим", font=('Arial',10,'bold'), width=9).grid(row=0,column=0)
-        tk.Label(dkv_win, text="Оп.1 (A/φ)", font=('Arial',10,'bold'), width=12).grid(row=0,column=1)
-        tk.Label(dkv_win, text="Оп.2 (A/φ)", font=('Arial',10,'bold'), width=12).grid(row=0,column=2)
-        for i in range(3):
-            tk.Label(dkv_win, text=f"{i+1} (1 критика, 2 критика, Раб. обороты)", font=('Arial',10), width=9).grid(row=i+1,column=0)
-            for j in range(2):
-                v1 = parse_vector_input(pusk_a[i][j])
-                v2 = parse_vector_input(pusk_b[i][j])
-                if v1 and v2:
-                    x1, y1 = polar_to_cartesian(*v1)
-                    x2, y2 = polar_to_cartesian(*v2)
-                    dx, dy = x2 - x1, y2 - y1
-                    amp, ang = cartesian_to_polar(dx, dy)
-                    text = f"{amp:.3f} / {ang:.1f}°"
+        dkv_win.geometry("700x400")
+        
+        # Фрейм для выбора метода расчёта
+        method_frame = tk.Frame(dkv_win)
+        method_frame.pack(pady=10)
+        
+        tk.Label(method_frame, text="Метод расчёта:", font=('Arial', 10, 'bold')).pack(side='left')
+        
+        method_var = tk.StringVar(value="supports")
+        tk.Radiobutton(method_frame, text="По опорам", variable=method_var, value="supports",
+                      command=lambda: self.update_dkv_table(table_frame, pusk_a, pusk_b, name_a, name_b, method_var.get())).pack(side='left', padx=10)
+        tk.Radiobutton(method_frame, text="По статике/динамике", variable=method_var, value="static_dynamic",
+                      command=lambda: self.update_dkv_table(table_frame, pusk_a, pusk_b, name_a, name_b, method_var.get())).pack(side='left', padx=10)
+        
+        # Фрейм для таблицы
+        table_frame = tk.Frame(dkv_win)
+        table_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Инициализация таблицы с методом по умолчанию
+        self.update_dkv_table(table_frame, pusk_a, pusk_b, name_a, name_b, "supports")
+
+    def update_dkv_table(self, parent_frame, pusk_a, pusk_b, name_a, name_b, method):
+        """Обновляет таблицу ДКВ в зависимости от выбранного метода."""
+        # Очищаем старую таблицу
+        for widget in parent_frame.winfo_children():
+            widget.destroy()
+            
+        if method == "supports":
+            # Классический расчёт по опорам
+            tk.Label(parent_frame, text="Режим", font=('Arial',10,'bold'), width=9).grid(row=0,column=0)
+            tk.Label(parent_frame, text="Оп.1 (A/φ)", font=('Arial',10,'bold'), width=15).grid(row=0,column=1)
+            tk.Label(parent_frame, text="Оп.2 (A/φ)", font=('Arial',10,'bold'), width=15).grid(row=0,column=2)
+            
+            for i in range(3):
+                tk.Label(parent_frame, text=f"{i+1} (1 критика, 2 критика, Раб. обороты)", font=('Arial',10), width=9).grid(row=i+1,column=0)
+                for j in range(2):
+                    v1 = parse_vector_input(pusk_a[i][j])
+                    v2 = parse_vector_input(pusk_b[i][j])
+                    if v1 and v2:
+                        x1, y1 = polar_to_cartesian(*v1)
+                        x2, y2 = polar_to_cartesian(*v2)
+                        dx, dy = x2 - x1, y2 - y1
+                        amp, ang = cartesian_to_polar(dx, dy)
+                        text = f"{amp:.3f} / {ang:.1f}°"
+                    else:
+                        text = "—"
+                    tk.Label(parent_frame, text=text, font=('Arial',10), width=15).grid(row=i+1,column=1+j)
+            
+            tk.Label(parent_frame, text=f"Δ = {name_b} – {name_a} (по опорам)", 
+                    font=('Arial',9,'italic')).grid(row=4,column=0,columnspan=3)
+                    
+        else:  # static_dynamic
+            # Расчёт по статике и динамике
+            tk.Label(parent_frame, text="Режим", font=('Arial',10,'bold'), width=9).grid(row=0,column=0)
+            tk.Label(parent_frame, text="Статика (A/φ)", font=('Arial',10,'bold'), width=15).grid(row=0,column=1)
+            tk.Label(parent_frame, text="Динамика (A/φ)", font=('Arial',10,'bold'), width=15).grid(row=0,column=2)
+            tk.Label(parent_frame, text="Результант (A/φ)", font=('Arial',10,'bold'), width=15).grid(row=0,column=3)
+            
+            for i in range(3):
+                tk.Label(parent_frame, text=f"{i+1} (1 критика, 2 критика, Раб. обороты)", font=('Arial',10), width=9).grid(row=i+1,column=0)
+                
+                # Расчёт статики и динамики для этого режима (используем среднее по опорам)
+                static_vectors = []
+                dynamic_vectors = []
+                
+                for j in range(2):
+                    v1 = parse_vector_input(pusk_a[i][j])
+                    v2 = parse_vector_input(pusk_b[i][j])
+                    if v1 and v2:
+                        statica, dynamica = calculate_statica_dynamica(v1, v2)
+                        static_vectors.append(statica)
+                        dynamic_vectors.append(dynamica)
+                
+                if static_vectors and dynamic_vectors:
+                    # Усредняем статику и динамику по опорам
+                    static_x = np.mean([polar_to_cartesian(*s)[0] for s in static_vectors])
+                    static_y = np.mean([polar_to_cartesian(*s)[1] for s in static_vectors])
+                    dynamic_x = np.mean([polar_to_cartesian(*d)[0] for d in dynamic_vectors])
+                    dynamic_y = np.mean([polar_to_cartesian(*d)[1] for d in dynamic_vectors])
+                    
+                    static_avg = cartesian_to_polar(static_x, static_y)
+                    dynamic_avg = cartesian_to_polar(dynamic_x, dynamic_y)
+                    
+                    # Векторное сложение статики и динамики
+                    result_x = static_x + dynamic_x
+                    result_y = static_y + dynamic_y
+                    result_avg = cartesian_to_polar(result_x, result_y)
+                    
+                    static_text = f"{static_avg[0]:.3f} / {static_avg[1]:.1f}°"
+                    dynamic_text = f"{dynamic_avg[0]:.3f} / {dynamic_avg[1]:.1f}°"
+                    result_text = f"{result_avg[0]:.3f} / {result_avg[1]:.1f}°"
                 else:
-                    text = "—"
-                tk.Label(dkv_win, text=text, font=('Arial',10), width=12).grid(row=i+1,column=1+j)
-        tk.Label(dkv_win, text=f"Δ = {name_b} – {name_a}", font=('Arial',9,'italic')).grid(row=4,column=0,columnspan=3)
+                    static_text = dynamic_text = result_text = "—"
+                
+                tk.Label(parent_frame, text=static_text, font=('Arial',10), width=15).grid(row=i+1,column=1)
+                tk.Label(parent_frame, text=dynamic_text, font=('Arial',10), width=15).grid(row=i+1,column=2)
+                tk.Label(parent_frame, text=result_text, font=('Arial',10), width=15).grid(row=i+1,column=3)
+            
+            tk.Label(parent_frame, text=f"Δ = {name_b} – {name_a} (по статике/динамике)", 
+                    font=('Arial',9,'italic')).grid(row=4,column=0,columnspan=4)
 
     def create_new_tab(self, initial=False):
         """Создаёт новую вкладку для пусковых данных."""
