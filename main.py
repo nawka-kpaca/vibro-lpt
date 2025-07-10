@@ -229,31 +229,43 @@ def find_optimal_gruz(pusk0, sensitivities, scheme="Единичная", max_mas
         logger.warning("Грубый поиск не нашёл подходящего решения, возвращены нулевые грузы")
         best_mass1, best_phase1 = 0.0, 0.0
         if is_symmetric:
-            best_mass2, best_phase2 = best_mass1, best_phase1
+            best_mass2, best_phase2 = 0.0, 0.0
         elif is_antisymmetric:
-            best_mass2, best_phase2 = best_mass1, (best_phase1 + 180) % 360
+            best_mass2, best_phase2 = 0.0, 180.0
         else:
             best_mass2, best_phase2 = 0.0, 0.0
 
     # Расчет остатков
     residuals = []
-    for i in range(n_speeds):
-        row = []
-        for j in range(n_probes):
-            v0 = parse_vector_input(pusk0[i][j]) or (0, 0)
-            if v0[0] == 0:
-                row.append(None)
-                continue
-            x0, y0 = polar_to_cartesian(*v0)
-            sens1 = sensitivities['plane1'][i][j]
-            sens2 = sensitivities['plane2'][i][j]
-            x_corr = x0 - (best_mass1 * np.cos(np.deg2rad(best_phase1)) * sens1[0] +
-                          best_mass2 * np.cos(np.deg2rad(best_phase2)) * sens2[0])
-            y_corr = y0 - (best_mass1 * np.sin(np.deg2rad(best_phase1)) * sens1[0] +
-                          best_mass2 * np.sin(np.deg2rad(best_phase2)) * sens2[0])
-            amp, ang = cartesian_to_polar(x_corr, y_corr)
-            row.append((amp, ang))
-        residuals.append(row)
+    if best_mass1 is not None and best_phase1 is not None and best_mass2 is not None and best_phase2 is not None:
+        for i in range(n_speeds):
+            row = []
+            for j in range(n_probes):
+                v0 = parse_vector_input(pusk0[i][j]) or (0, 0)
+                if v0[0] == 0:
+                    row.append(None)
+                    continue
+                x0, y0 = polar_to_cartesian(*v0)
+                sens1 = sensitivities['plane1'][i][j]
+                sens2 = sensitivities['plane2'][i][j]
+                x_corr = x0 - (best_mass1 * np.cos(np.deg2rad(best_phase1)) * sens1[0] +
+                              best_mass2 * np.cos(np.deg2rad(best_phase2)) * sens2[0])
+                y_corr = y0 - (best_mass1 * np.sin(np.deg2rad(best_phase1)) * sens1[0] +
+                              best_mass2 * np.sin(np.deg2rad(best_phase2)) * sens2[0])
+                amp, ang = cartesian_to_polar(x_corr, y_corr)
+                row.append((amp, ang))
+            residuals.append(row)
+    else:
+        # Если оптимизация не удалась, возвращаем исходные значения как остатки
+        for i in range(n_speeds):
+            row = []
+            for j in range(n_probes):
+                v0 = parse_vector_input(pusk0[i][j]) or (0, 0)
+                if v0[0] == 0:
+                    row.append(None)
+                else:
+                    row.append(v0)  # Исходная вибрация без коррекции
+            residuals.append(row)
     return best_mass1, best_phase1, best_mass2, best_phase2, np.sqrt(min_sum), residuals
 
 def classic_vector_balance(pusk0, pusk1, pusk2, gruzes, probe_weights=[1.0, 2.0], speed_weights=[2500.0, 3000.0]):
