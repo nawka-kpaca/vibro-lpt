@@ -35,64 +35,82 @@ def mean_angle_deg(angles):
     return (np.rad2deg(np.arctan2(sin_sum, cos_sum)) % 360)
 
 def calculate_sensitivity(pusk0, pusk1, pusk2, gruzes):
-    n_speeds = len(pusk0)
+    """
+    Вычисляет чувствительность для двух плоскостей.
+    pusk0, pusk1, pusk2 - списки с данными по плоскостям [plane1, plane2]
+    gruzes - массы грузов [(mass1, angle1), (mass2, angle2)]
+    """
     sensitivities = {'plane1': [], 'plane2': []}
     gruz1 = gruzes[0][0] if gruzes and len(gruzes) > 0 else 0.5
     gruz2 = gruzes[1][0] if gruzes and len(gruzes) > 1 else 0.5
-    for i in range(n_speeds):
-        # Плоскость 1
-        v0 = parse_vector_input(pusk0[i][0]) or (0, 0)
-        v1 = parse_vector_input(pusk1[i][0]) or (0, 0)
-        x0, y0 = polar_to_cartesian(*v0)
-        x1, y1 = polar_to_cartesian(*v1)
-        dx, dy = x1 - x0, y1 - y0
-        amp, ang = cartesian_to_polar(dx, dy)
-        sens_amp = (amp / gruz1) if gruz1 > 0 and amp > 0 else 0
-        sensitivities['plane1'].append((max(sens_amp, 1e-6), ang))
-        # Плоскость 2
-        v1_2 = parse_vector_input(pusk1[i][1]) or (0, 0)
-        v2 = parse_vector_input(pusk2[i][1]) or (0, 0)
-        x1_2, y1_2 = polar_to_cartesian(*v1_2)
-        x2, y2 = polar_to_cartesian(*v2)
-        dx2, dy2 = x2 - x1_2, y2 - y1_2
-        amp2, ang2 = cartesian_to_polar(dx2, dy2)
-        sens_amp2 = (amp2 / gruz2) if gruz2 > 0 and amp2 > 0 else 0
-        sensitivities['plane2'].append((max(sens_amp2, 1e-6), ang2))
+    
+    # Чувствительность для плоскости 1 (влияние груза 1)
+    v0 = pusk0[0] if pusk0[0] else (0, 0)
+    v1 = pusk1[0] if pusk1[0] else (0, 0)
+    x0, y0 = polar_to_cartesian(*v0)
+    x1, y1 = polar_to_cartesian(*v1)
+    dx, dy = x1 - x0, y1 - y0
+    amp, ang = cartesian_to_polar(dx, dy)
+    sens_amp = (amp / gruz1) if gruz1 > 0 and amp > 0 else 1e-6
+    sensitivities['plane1'].append((max(sens_amp, 1e-6), ang))
+    
+    # Чувствительность для плоскости 2 (влияние груза 2) 
+    v1_2 = pusk1[1] if pusk1[1] else (0, 0)
+    v2 = pusk2[1] if pusk2[1] else (0, 0)
+    x1_2, y1_2 = polar_to_cartesian(*v1_2)
+    x2, y2 = polar_to_cartesian(*v2)
+    dx2, dy2 = x2 - x1_2, y2 - y1_2
+    amp2, ang2 = cartesian_to_polar(dx2, dy2)
+    sens_amp2 = (amp2 / gruz2) if gruz2 > 0 and amp2 > 0 else 1e-6
+    sensitivities['plane2'].append((max(sens_amp2, 1e-6), ang2))
+    
     return sensitivities
 
 def classic_balance(vib0, sens_plane1, sens_plane2):
-    # Решение по чувствительности (2 опоры, 2 режима)
-    # Преобразуем чувствительности и векторы в декартовы
-    S = []
-    for s1, s2 in zip(sens_plane1, sens_plane2):
-        x1, y1 = polar_to_cartesian(*s1)
-        x2, y2 = polar_to_cartesian(*s2)
-        S.append([x1, y1, x2, y2])
-    S = np.array(S)
-    # Вектор вибраций
-    V = []
-    for v in vib0:
-        x, y = polar_to_cartesian(*v)
-        V.append([x, y])
-    V = np.array(V)
-    # Решаем отдельно по каждому режиму (строке)
-    results = []
-    for i in range(S.shape[0]):
-        # Матрица чувствительности 2x2
-        sens_matrix = np.array([[S[i,0], S[i,2]], [S[i,1], S[i,3]]])
-        vib_vec = np.array([V[i,0], V[i,1]]).reshape(2, 1)
-        try:
-            M = np.linalg.solve(sens_matrix, vib_vec)
-        except np.linalg.LinAlgError:
-            M = np.array([[0],[0]])
-        amp1, ang1 = cartesian_to_polar(M[0][0], M[1][0])
-        results.append((round(amp1,3), round(ang1,1)))
-    # Среднее значение
-    amps = [res[0] for res in results]
-    angs = [res[1] for res in results]
-    mean_amp = round(np.mean(amps), 3)
-    mean_ang = round(mean_angle_deg(angs), 1)
-    return results, (mean_amp, mean_ang)
+    """
+    Классический расчет по матрице чувствительности (2 опоры, 2 независимых груза).
+    vib0: [(amp1, phase1), (amp2, phase2)] - исходные вибрации
+    sens_plane1, sens_plane2: [(sens_amp, sens_phase)] - чувствительности
+    """
+    # Преобразуем исходные вибрации в декартовы координаты
+    x1, y1 = polar_to_cartesian(*vib0[0])
+    x2, y2 = polar_to_cartesian(*vib0[1])
+    vib_vec = np.array([x1, y1, x2, y2]).reshape(4, 1)
+    
+    # Строим матрицу чувствительности 4x2 (4 датчика, 2 груза)
+    # Груз 1 влияет на плоскость 1, груз 2 влияет на плоскость 2
+    sens_matrix = np.zeros((4, 2))
+    
+    if sens_plane1:
+        s1_x, s1_y = polar_to_cartesian(*sens_plane1[0])
+        sens_matrix[0, 0] = s1_x  # влияние груза 1 на x1
+        sens_matrix[1, 0] = s1_y  # влияние груза 1 на y1
+    
+    if sens_plane2:
+        s2_x, s2_y = polar_to_cartesian(*sens_plane2[0])
+        sens_matrix[2, 1] = s2_x  # влияние груза 2 на x2  
+        sens_matrix[3, 1] = s2_y  # влияние груза 2 на y2
+    
+    # Решаем систему методом наименьших квадратов
+    try:
+        M, residuals, rank, s = np.linalg.lstsq(sens_matrix, vib_vec.flatten(), rcond=None)
+        mass1 = np.hypot(M[0], 0)  # масса груза 1
+        mass2 = np.hypot(M[1], 0)  # масса груза 2
+        phase1 = 0 if M[0] >= 0 else 180  # фаза груза 1
+        phase2 = 0 if M[1] >= 0 else 180  # фаза груза 2
+        
+        result1 = (round(abs(mass1), 3), round(phase1, 1))
+        result2 = (round(abs(mass2), 3), round(phase2, 1))
+        
+        # Среднее значение
+        mean_mass = round((abs(mass1) + abs(mass2)) / 2, 3)
+        mean_phase = round((phase1 + phase2) / 2, 1)
+        
+        return [result1, result2], (mean_mass, mean_phase)
+        
+    except np.linalg.LinAlgError:
+        # Fallback если матрица вырожденная
+        return [(0.0, 0.0), (0.0, 0.0)], (0.0, 0.0)
 
 def optimal_balance(vib0, system_type="cososym"):
     # Статика: сумма векторов обеих опор; динамика: разность
@@ -217,20 +235,35 @@ class App(tk.Tk):
         vib0_vec = [parse_vector_input(vib0[0]), parse_vector_input(vib0[1])]
         pusk1_vec = [parse_vector_input(pusk1[0]), parse_vector_input(pusk1[1])]
         pusk2_vec = [parse_vector_input(pusk2[0]), parse_vector_input(pusk2[1])]
-        sens = calculate_sensitivity([vib0_vec, pusk1_vec, pusk2_vec], [pusk1_vec, pusk2_vec, vib0_vec], [pusk2_vec, vib0_vec, pusk1_vec], gruzes)
-        # Для простоты: берем только первую строку чувствительности
+        
+        # Проверяем корректность данных
+        if not all([vib0_vec[0], vib0_vec[1], pusk1_vec[0], pusk1_vec[1]]):
+            self.txt_result.delete(1.0, tk.END)
+            self.txt_result.insert(tk.END, "Ошибка: Некорректные входные данные для классического расчета\n")
+            return
+            
+        sens = calculate_sensitivity(vib0_vec, pusk1_vec, pusk2_vec, gruzes)
         sens_plane1 = sens['plane1']
         sens_plane2 = sens['plane2']
+        
         results, mean = classic_balance(vib0_vec, sens_plane1, sens_plane2)
+        
         self.txt_result.delete(1.0, tk.END)
         self.txt_result.insert(tk.END, "Классический расчет по опорам:\n")
-        for i, r in enumerate(results):
-            self.txt_result.insert(tk.END, f"Режим {i+1}: Масса={r[0]} кг, Фаза={r[1]}°\n")
-        self.txt_result.insert(tk.END, f"\nСреднее: Масса={mean[0]} кг, Фаза={mean[1]}°\n")
+        self.txt_result.insert(tk.END, f"Груз 1 (плоскость 1): Масса={results[0][0]} кг, Фаза={results[0][1]}°\n")
+        self.txt_result.insert(tk.END, f"Груз 2 (плоскость 2): Масса={results[1][0]} кг, Фаза={results[1][1]}°\n")
+        self.txt_result.insert(tk.END, f"\nСреднее значение: Масса={mean[0]} кг, Фаза={mean[1]}°\n")
 
     def on_optimal(self):
         vib0, _, _, _ = self.get_inputs()
         vib0_vec = [parse_vector_input(vib0[0]), parse_vector_input(vib0[1])]
+        
+        # Проверяем корректность данных
+        if not all([vib0_vec[0], vib0_vec[1]]):
+            self.txt_result.delete(1.0, tk.END)
+            self.txt_result.insert(tk.END, "Ошибка: Некорректные входные данные для оптимального расчета\n")
+            return
+            
         system_type = self.system_var.get()
         mass, phase = optimal_balance(vib0_vec, system_type=system_type)
         if system_type == "sym":
