@@ -1,0 +1,6 @@
+*.backup
+*.pyc
+__pycache__/
+.DS_Store
+*.tmp
+test_*.py
